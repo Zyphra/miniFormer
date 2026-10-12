@@ -31,7 +31,7 @@ class TransformerClassifier(nn.Module):
         temporal_pos="sinusoidal",
         channel_pos="spatial",
         aggregation_mode="CLS_token",
-        normalize=False,
+        normalize=True,
         channel_coords=None,
     ):
         super().__init__()
