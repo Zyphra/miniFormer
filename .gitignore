@@ -1,0 +1,16 @@
+# Independent tokenizer repositories (including their own .git directories).
+/tokenizers/
+
+# Generated outputs; keep the empty directory structure in Git.
+/token_cache/**
+!/token_cache/**/
+!/token_cache/**/.gitkeep
+/results/*
+!/results/.gitkeep
+
+# NumPy archives, wherever they are generated.
+*.npz
+
+# Python bytecode.
+__pycache__/
+*.py[cod]
