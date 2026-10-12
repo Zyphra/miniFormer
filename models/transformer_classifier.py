@@ -138,9 +138,114 @@ class TransformerClassifier(nn.Module):
         return self.classification_head(pooled)
 
 
-def train(model, dataloader, optimizer):
-    pass
+@torch.no_grad()
+def classification_metrics(logits, labels):
+    """Summarize a whole split, rather than averaging per-batch accuracies.
+
+    Cross-entropy measures error against the labels. Prediction entropy measures
+    uncertainty: zero means confident; log(number of classes) means uniform.
+    Both use natural logarithms (nats).
+    """
+    n_classes = logits.shape[1]
+    predictions = logits.argmax(dim=1)
+    log_probabilities = F.log_softmax(logits, dim=1)
+    probabilities = log_probabilities.exp()
+
+    # Rows are true classes; columns are predicted classes.
+    confusion = torch.zeros(n_classes, n_classes, dtype=torch.long)
+    for true_class in range(n_classes):
+        for predicted_class in range(n_classes):
+            confusion[true_class, predicted_class] = (
+                (labels == true_class) & (predictions == predicted_class)
+            ).sum()
+    support = confusion.sum(dim=1)
+    present = support > 0
+    recall = confusion.diag()[present].float() / support[present]
+
+    return {
+        "cross_entropy": F.cross_entropy(logits, labels).item(),
+        "balanced_accuracy": recall.mean().item(),
+        "prediction_entropy": -(probabilities * log_probabilities).sum(dim=1).mean().item(),
+        "confusion_matrix": confusion.tolist(),
+        "n_examples": len(labels),
+    }
 
 
+def train(model, dataloader, optimizer, max_grad_norm=1.0):
+    """Train for ONE epoch; return metrics and gradient diagnostics.
+
+    The caller controls the epoch loop. Reported gradients are measured before
+    clipping. Training predictions are collected while weights are changing;
+    use test(model, train_loader) for a fixed-weight training-set measurement.
+    """
+    model.train()
+    device = next(model.parameters()).device
+    loss_function = nn.CrossEntropyLoss()
+    all_logits, all_labels = [], []
+    gradient_norms = []
+    parameter_gradient_sums = {name: 0.0 for name, p in model.named_parameters() if p.requires_grad}
+    missing_gradients = set()
+
+    for inputs, labels in dataloader:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad(set_to_none=True)
+        logits = model(inputs)
+        loss = loss_function(logits, labels)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Non-finite training loss")
+        loss.backward()
+
+        # Inspect gradients before the optimizer changes the weights.
+        squared_norm = 0.0
+        for name, parameter in model.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            if parameter.grad is None:
+                missing_gradients.add(name)
+                continue
+            if not torch.isfinite(parameter.grad).all():
+                raise FloatingPointError(f"Non-finite gradient in {name}")
+            norm = parameter.grad.norm().item()
+            parameter_gradient_sums[name] += norm
+            squared_norm += norm ** 2
+        gradient_norms.append(squared_norm ** 0.5)
+
+        if max_grad_norm is not None:
+            nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        optimizer.step()
+
+        # Detach so the metrics do not keep the backward graph in memory.
+        all_logits.append(logits.detach().cpu())
+        all_labels.append(labels.detach().cpu())
+
+    if not all_labels:
+        raise ValueError("Training dataloader is empty")
+    metrics = classification_metrics(torch.cat(all_logits), torch.cat(all_labels))
+    metrics["gradient_norms"] = gradient_norms
+    metrics["parameter_gradient_norms"] = {
+        name: total / len(gradient_norms) for name, total in parameter_gradient_sums.items()
+    }
+    metrics["missing_gradients"] = sorted(missing_gradients)
+    return metrics
+
+
+@torch.no_grad()
 def test(model, dataloader):
-    pass
+    """Evaluate a split without updating weights or calculating gradients."""
+    model.eval()
+    device = next(model.parameters()).device
+    all_logits, all_labels = [], []
+
+    for inputs, labels in dataloader:
+        inputs = inputs.to(device)
+        logits = model(inputs)
+        if not torch.isfinite(logits).all():
+            raise FloatingPointError("Non-finite evaluation logits")
+        all_logits.append(logits.cpu())
+        all_labels.append(labels.cpu())
+
+    if not all_labels:
+        raise ValueError("Evaluation dataloader is empty")
+    return classification_metrics(torch.cat(all_logits), torch.cat(all_labels))
