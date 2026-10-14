@@ -38,6 +38,31 @@ Defaults are a start of 10 Hz and spacing of 0.075 Hz. Frequencies are used
 exactly as requested, without rounding to FFT bins. They must be positive,
 distinct, and below half the sampling rate.
 
+### Restrict the boost to fixed channels
+
+`--boost-channels C3 Cz C4` applies the class-specific amplitude increase only
+to those channels. The same mask is used for every class and recording; there
+is no channel shuffling. Other channels keep all background tones, amplitude
+jitter, and noise. Omitting the flag preserves the original all-channel data
+exactly, including the random draws.
+
+For example, a class-0 recording has nominal 10 Hz amplitude 2.0 on C3/Cz/C4
+and 0.5 on all other channels, before the existing spatial gains. The other
+frequencies remain at 0.5 everywhere. Class 1 boosts its own frequency on the
+same C3/Cz/C4 set, and so on.
+
+```text
+d_i(t) = (dominant_amplitude - background_amplitude) * sin(2*pi*f_yi*t + phi_i,yi)
+b_i(t) = source_signal_i(t) - d_i(t)
+x_ic(t) = g_c * [b_i(t) + boost_channel_mask_c * d_i(t)] + epsilon_ic(t)
+```
+
+Selected channels are numerically identical to the original all-channel run
+with the same seed. Unselected channels lose only the nominal class boost.
+This creates an informative subset, but channel identity still does not define
+the label: the boosted frequency does. Unknown, duplicate, or empty channel
+lists raise assertions.
+
 ## 19-channel spatial model
 
 `standard_1020.json` contains 19 electrodes extracted from MNE 1.11.0's
@@ -57,7 +82,7 @@ T7/T8/P7/P8 use the modern names for the T3/T4/T5/T6 positions. The saved file
 records the exact coordinates, channel order, source, and MNE version. Loading
 the generator does not require MNE or a coordinate download.
 
-First generate the same clean mixture as before, then distribute it to channels:
+With the default all-channel boost, generate a clean mixture and distribute it:
 
 ```text
 s_i(t) = sum_j A_ij * sin(2*pi*f_j*t + phi_ij)
@@ -75,8 +100,10 @@ g_c = h_c / sqrt(mean_c(h_c²))
 This produces a smooth gain profile centered on Cz, with `mean(g_c²) = 1` to
 keep average signal power comparable to the single-channel experiment. The
 gain is an illustrative spatial profile, not a physiological forward solution.
-The clean multichannel signal has rank one: every channel sees a scaled copy of
-the shared mixture. Noise makes the observed recordings differ across channels.
+With all channels boosted, the clean multichannel signal has rank one: every
+channel sees a scaled copy of the shared mixture. A subset mask can increase
+the clean rank to two (background plus masked boost). Noise makes the observed
+recordings differ across channels.
 
 Noise is drawn jointly across channels at each time sample:
 
@@ -121,7 +148,7 @@ channel powers; averaging can reduce noise variability and change accuracy.
 
 ### Why average channel powers?
 
-For this generator, every clean channel is `g_c * s_i(t)`. Fourier projection
+For the default all-channel boost, every clean channel is `g_c * s_i(t)`. Fourier projection
 is linear, so at every tested frequency (including off-grid frequencies):
 
 ```text
@@ -144,6 +171,11 @@ do not provide 19 independent measurements. Pooling would discard potentially
 useful spatial information if individual frequencies acquired different spatial
 patterns. In that extension, flatten `(C, K)` per-channel powers or use a model
 with an explicit channel dimension and the saved electrode coordinates.
+
+With `--boost-channels`, pooling all channels includes background-only channels
+and can dilute the class contrast. The rank-one argument above no longer
+applies. Selected-channel pooling and flattened channel powers are separate
+feature comparisons; the default baselines still pool all channels.
 
 A comparison on the default 256 Hz, seed-42 dataset used the same 640 training and
 160 test recordings, train-only scaling, and unchanged model settings:
@@ -201,11 +233,12 @@ underlying signals. Use fresh seeds for comparisons after choosing parameters.
 From the repository root, with NumPy, Matplotlib, SciPy, and scikit-learn available:
 
 ```sh
-python3 synthetic_data/generate.py
-python3 synthetic_data/generate.py --n-classes 6 --output synthetic_data/outputs/k6
-python3 synthetic_data/generate.py --frequency-spacing 0.05 --output synthetic_data/outputs/harder
-python3 synthetic_data/generate.py --frequency-spacing 0.2 --output synthetic_data/outputs/easier
-python3 synthetic_data/generate.py --noise-spatial-fraction 0 --output synthetic_data/outputs/independent_noise
+python3 synthetic_data/sinusoid_amplitude/generate.py
+python3 synthetic_data/sinusoid_amplitude/generate.py --n-classes 6 --output synthetic_data/sinusoid_amplitude/outputs/k6
+python3 synthetic_data/sinusoid_amplitude/generate.py --frequency-spacing 0.05 --output synthetic_data/sinusoid_amplitude/outputs/harder
+python3 synthetic_data/sinusoid_amplitude/generate.py --frequency-spacing 0.2 --output synthetic_data/sinusoid_amplitude/outputs/easier
+python3 synthetic_data/sinusoid_amplitude/generate.py --noise-spatial-fraction 0 --output synthetic_data/sinusoid_amplitude/outputs/independent_noise
+python3 synthetic_data/sinusoid_amplitude/generate.py --boost-channels C3 Cz C4 --output synthetic_data/sinusoid_amplitude/channel_subset_C3_Cz_C4
 ```
 
 If needed, install the dependencies in your Python environment with
@@ -214,10 +247,10 @@ If needed, install the dependencies in your Python environment with
 To recover an FFT-aligned, noise-free separated construction at five seconds:
 
 ```sh
-python3 synthetic_data/generate.py --frequency-spacing 0.2 --noise-std 0 --output synthetic_data/outputs/clean
+python3 synthetic_data/sinusoid_amplitude/generate.py --frequency-spacing 0.2 --noise-std 0 --output synthetic_data/sinusoid_amplitude/outputs/clean
 ```
 
-The default output directory is `synthetic_data/outputs/` (ignored by Git).
+The default output directory is `synthetic_data/sinusoid_amplitude/outputs/` (ignored by Git).
 Repeating a command with the same seed reproduces the data and overwrites files
 in that output directory. Use separate output paths for different experiments.
 
@@ -231,7 +264,9 @@ in that output directory. Use separate output paths for different experiments.
 | `y` | Integer labels 0 through K−1, shape `(N,)` |
 | `power` | Channel-averaged Fourier projection power, shape `(N, K)`; used by K-means and SVM |
 | `channel_power` | Fourier projection power for every channel, shape `(N, 19, K)` |
-| `source_signal` | Clean shared mixture before gains/noise, shape `(N, T)`; diagnostic ground truth, not a classifier input |
+| `source_signal` | Clean mixture on boosted channels before gains/noise, shape `(N, T)`; diagnostic ground truth, not a classifier input |
+| `boost_signal` | Nominal class-specific boost waveform `(N, T)`; subtract from `source_signal` for unselected channels before applying gains |
+| `boost_channels`, `boost_channel_mask` | Resolved selected names and boolean mask `(19,)`, fixed across classes and recordings |
 | `channel_names`, `channel_positions` | Electrode names `(19,)` and corresponding 3D positions `(19, 3)` |
 | `channel_gains`, `noise_correlation` | Fixed gains `(19,)` and specified noise correlation `(19, 19)` |
 | `montage_name`, `coordinate_frame`, `coordinate_units` | `standard_1020`, `head`, and `m` |
@@ -244,7 +279,7 @@ in that output directory. Use separate output paths for different experiments.
 ```python
 import numpy as np
 
-data = np.load("synthetic_data/outputs/dataset.npz")
+data = np.load("synthetic_data/sinusoid_amplitude/outputs/dataset.npz")
 train = data["train_indices"]
 test = data["test_indices"]
 X_train, y_train = data["X"][train], data["y"][train]
@@ -252,14 +287,18 @@ X_test, y_test = data["X"][test], data["y"][test]
 ```
 
 You can also call `make_dataset` directly from
-`synthetic_data.generate`; it returns the arrays before splitting/evaluation.
+`synthetic_data.sinusoid_amplitude.generate`; it returns the arrays before splitting/evaluation.
 
 `overview.png` shows channel-mean waveforms, class-average spectra (power averaged
 across channels), a 2D PCA projection of held-out power features, and the signal
 equations with variable definitions. PCA is fitted
 on training features; a 2D projection can hide separation present in the full
 K-dimensional space. Waveform/spectrum overlays show at most eight classes.
-Each waveform trace is one recording averaged across channels.
+Solid waveform traces average the boosted channels; dashed traces average the
+remaining channels when a subset is selected. The title names the boosted
+channels. Spectra and PCA retain the all-channel pooled features used by the
+baselines. The PCA panel reports the linear SVM's full-feature train/test scores;
+the 2D view alone does not establish linear separability.
 `confusion_matrix.png` compares K-means and linear SVM held-out predictions side by side.
 `multichannel.png` shows the electrode positions colored by gain, all 19 channels
 from one class-0 recording, the specified noise correlation, and the measured

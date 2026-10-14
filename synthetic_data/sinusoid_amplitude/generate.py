@@ -67,6 +67,7 @@ def make_dataset(
     frequency_spacing=0.075,
     spatial_length=0.08,
     noise_spatial_fraction=0.5,
+    boost_channels=None,
 ):
     """Each class boosts a different frequency; phase and noise vary per sample.
 
@@ -75,6 +76,8 @@ def make_dataset(
     Shared sinusoids have fixed spatial gains, plus spatially correlated noise.
     Class k boosts frequency_start + k * frequency_spacing Hz. Close tones
     overlap in power space; separation is not guaranteed even without noise.
+    boost_channels names a fixed subset receiving the class-specific boost;
+    None boosts every channel. Other channels retain background tones and noise.
     """
     if not isinstance(n_classes, (int, np.integer)) or n_classes < 2:
         raise ValueError("n_classes must be an integer >= 2")
@@ -95,6 +98,12 @@ def make_dataset(
     if dominant_amplitude - background_amplitude <= 2 * amplitude_jitter:
         raise ValueError("Dominant amplitude must exceed background + 2 * jitter")
     spatial = channel_model(spatial_length, noise_spatial_fraction)
+    names = spatial["channel_names"]
+    selected = names if boost_channels is None else np.asarray(boost_channels)
+    assert selected.ndim == 1 and len(selected) > 0, "boost_channels must be a nonempty sequence of channel names"
+    assert len(np.unique(selected)) == len(selected), "boost_channels contains duplicate names"
+    assert np.isin(selected, names).all(), f"Unknown boost channels: {selected[~np.isin(selected, names)]}"
+    boost_mask = np.isin(names, selected)
 
     if frequency_start <= 0 or frequency_spacing <= 0:
         raise ValueError("frequency_start and frequency_spacing must be positive")
@@ -118,6 +127,10 @@ def make_dataset(
         source_signal += amplitudes[:, j, None] * np.sin(
             2 * np.pi * frequency * time[None, :] + phases[:, j, None]
         )
+    boost_signal = (dominant_amplitude - background_amplitude) * np.sin(
+        2 * np.pi * frequencies[labels, None] * time[None, :]
+        + phases[np.arange(len(labels)), labels, None]
+    )
     eigenvalues, eigenvectors = np.linalg.eigh(spatial["noise_correlation"])
     # A square root also handles a nearly rank-deficient kernel at fraction=1.
     noise_factor = eigenvectors * np.sqrt(np.maximum(eigenvalues, 0))
@@ -127,7 +140,10 @@ def make_dataset(
         stop = min(start + 64, len(labels))
         independent_noise = rng.normal(0, noise_std, size=(stop - start, n_channels, n_times))
         signals[start:stop] = (
-            spatial["channel_gains"][None, :, None] * source_signal[start:stop, None, :]
+            spatial["channel_gains"][None, :, None] * (
+                source_signal[start:stop, None, :]
+                - (~boost_mask)[None, :, None] * boost_signal[start:stop, None, :]
+            )
             + noise_factor @ independent_noise
         )
     channel_power = frequency_power(signals, sampling_rate, frequencies)
@@ -136,6 +152,9 @@ def make_dataset(
         "X": signals,
         "y": labels,
         "source_signal": source_signal.astype(np.float32),
+        "boost_signal": boost_signal.astype(np.float32),
+        "boost_channels": names[boost_mask],
+        "boost_channel_mask": boost_mask,
         "channel_power": channel_power,
         "power": channel_power.mean(axis=1),
         "time": time,
@@ -213,13 +232,16 @@ def plot_dataset(data, metrics, sampling_rate, output):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    signals, labels, power = data["X"].mean(axis=1), data["y"], data["power"]
+    boost_mask = data["boost_channel_mask"]
+    signals, labels, power = data["X"][:, boost_mask].mean(axis=1), data["y"], data["power"]
     frequencies, time = data["frequencies"], data["time"]
     n_classes = len(frequencies)
     colors = plt.cm.tab10(np.arange(n_classes) % 10)
     fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True)
     n_channels = data["X"].shape[1]
-    fig.suptitle(f"Synthetic EEG-like signals · {n_channels} channels · {n_classes} classes · {len(labels):,} examples", fontsize=17)
+    selected = ", ".join(data["boost_channels"])
+    fig.suptitle(f"Synthetic EEG-like signals · {n_channels} channels · {n_classes} classes · {len(labels):,} examples\n"
+                 f"Boosted channels (fixed across classes): {selected}", fontsize=14)
 
     # Cap waveform/spectrum overlays to keep a large-K run readable.
     shown = min(n_classes, 8)
@@ -228,8 +250,11 @@ def plot_dataset(data, metrics, sampling_rate, output):
     offsets = np.arange(shown)[::-1] * 2.5 * np.max(np.abs(signals[example_indices][:, visible]))
     for k, index in enumerate(example_indices):
         axes[0, 0].plot(time[visible], signals[index, visible] + offsets[k], color=colors[k], lw=0.8)
+        if not boost_mask.all():
+            background = data["X"][index, ~boost_mask].mean(axis=0)
+            axes[0, 0].plot(time[visible], background[visible] + offsets[k], color=colors[k], lw=0.8, ls="--", alpha=0.65)
     axes[0, 0].set(yticks=offsets, yticklabels=[f"Class {k}{'*' if k == 0 else ''}: {frequencies[k]:g} Hz" for k in range(shown)],
-                   xlabel="Time (s)")
+                   xlabel="Time (s)", title="Channel means · boosted: solid; others: dashed")
 
     # Zero padding samples the spectrum more densely for display; it does not
     # add frequency resolution or change the features used by the classifier.
@@ -260,6 +285,11 @@ def plot_dataset(data, metrics, sampling_rate, output):
         axes[1, 0].scatter(points[:, 0], points[:, 1], color=colors[k], s=14, alpha=0.65, label=f"Class {k}")
     axes[1, 0].set(xlabel=f"PC 1 ({explained[0]:.1%})", ylabel=f"PC 2 ({explained[1]:.1%})",
                    title="Held-out power features · PCA fitted on training data")
+    axes[1, 0].text(0.02, 0.02,
+                    f"Linear SVM ({n_classes}D): train {metrics['svm']['train_accuracy']:.1%}, "
+                    f"test {metrics['svm']['test_accuracy']:.1%}",
+                    transform=axes[1, 0].transAxes, fontsize=9,
+                    bbox={"facecolor": "white", "alpha": 0.9, "edgecolor": "none"})
     if n_classes <= 8:
         axes[1, 0].legend(ncols=2, fontsize=8)
 
@@ -267,17 +297,17 @@ def plot_dataset(data, metrics, sampling_rate, output):
     explanation.set_axis_off()
     explanation.set_title("Signal generation")
     explanation.text(
-        0.5, 0.9, r"$s_i(t) = \sum_{j=0}^{K-1} A_{ij}\,\sin(2\pi f_j t + \phi_{ij})$",
+        0.5, 0.9, r"$x_{ic}(t) = g_c\,[b_i(t) + m_c\,d_i(t)] + \epsilon_{ic}(t)$",
         transform=explanation.transAxes, ha="center", va="center", fontsize=15,
     )
     explanation.text(
-        0.5, 0.73, r"$x_{ic}(t) = g_c\,s_i(t) + \epsilon_{ic}(t)$",
-        transform=explanation.transAxes, ha="center", va="center", fontsize=17,
+        0.5, 0.73, r"$d_i(t) = \Delta A\,\sin(2\pi f_{y_i}t + \phi_{i,y_i})$",
+        transform=explanation.transAxes, ha="center", va="center", fontsize=15,
     )
     definitions = [
-        (r"$K$", "Number of classes and shared components"),
-        (r"$f_j$", "Fixed component frequency"),
-        (r"$A_{ij},\phi_{ij}$", "Amplitude and phase shared across channels"),
+        (r"$b_i(t)$", "All background tones, with phase/amplitude jitter"),
+        (r"$\Delta A$", "Dominant amplitude minus background amplitude"),
+        (r"$m_c$", "1 on selected channels, 0 on other channels"),
         (r"$g_c$", "Fixed channel gain from electrode position"),
         (r"$\epsilon_{ic}(t)$", "Gaussian noise; nearby channels correlated"),
     ]
@@ -285,10 +315,10 @@ def plot_dataset(data, metrics, sampling_rate, output):
         y = 0.56 - 0.1 * row
         explanation.text(0.05, y, symbol, transform=explanation.transAxes,
                          va="center", fontsize=13)
-        explanation.text(0.24, y, description, transform=explanation.transAxes,
-                         va="center", fontsize=10.5)
-    explanation.text(0.05, 0.035, r"Label $y_i$ selects which amplitude is boosted.",
-                     transform=explanation.transAxes, va="center", fontsize=12)
+        explanation.text(0.22, y, description, transform=explanation.transAxes,
+                         va="center", fontsize=9.5)
+    explanation.text(0.05, 0.035, r"Label $y_i$ selects frequency; the channel mask stays fixed.",
+                     transform=explanation.transAxes, va="center", fontsize=10)
     fig.savefig(output / "overview.png", dpi=160)
     plt.close(fig)
 
@@ -323,13 +353,14 @@ def plot_multichannel(data, output):
 
     positions_cm = 100 * positions
     points = axes[0, 0].scatter(positions_cm[:, 0], positions_cm[:, 1],
-                                c=data["channel_gains"], s=120, cmap="viridis")
+                                c=data["channel_gains"], s=120, cmap="viridis",
+                                edgecolors=np.where(data["boost_channel_mask"], "black", "none"), linewidths=2)
     for name, (x, y, _) in zip(names, positions_cm):
         axes[0, 0].annotate(name, (x, y), xytext=(0, 8), textcoords="offset points",
                             ha="center", fontsize=9)
     axes[0, 0].set(xlabel="Head x (cm; positive = right)",
                    ylabel="Head y (cm; positive = anterior)",
-                   title="Electrode positions · top view")
+                   title="Electrode positions · black outline = boosted")
     axes[0, 0].set_aspect("equal")
     axes[0, 0].margins(0.15)
     fig.colorbar(points, ax=axes[0, 0], label="Fixed signal gain")
@@ -385,6 +416,8 @@ def main():
                         help="Spatial smoothness length in meters (default: 0.08)")
     parser.add_argument("--noise-spatial-fraction", type=float, default=0.5,
                         help="Spatially correlated fraction of noise variance (default: 0.5)")
+    parser.add_argument("--boost-channels", nargs="+",
+                        help="Channel names receiving the class-specific amplitude boost, fixed across classes (default: all)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path(__file__).parent / "outputs")
     args = parser.parse_args()
@@ -397,6 +430,7 @@ def main():
     report = {"config": config, "frequencies_hz": data["frequencies"].tolist(),
               "montage": str(data["montage_name"]),
               "channel_names": data["channel_names"].tolist(),
+              "boost_channels": data["boost_channels"].tolist(),
               "coordinate_frame": str(data["coordinate_frame"]),
               "coordinate_units": str(data["coordinate_units"]),
               "fft_bin_spacing_hz": args.sampling_rate / data["X"].shape[-1],

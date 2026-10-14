@@ -24,10 +24,10 @@ class TransformerClassifier(nn.Module):
         n_classes,
         channels=16,
         coarse_time=32,
-        codebook_dim=8,
+        codebook_dim=8, #check this guy out {8, 16, ..., }
         model_dim=64,
         heads=2,
-        depth=2,
+        depth=4, #4 seems to be at sweet spot of small + good performance
         temporal_pos="sinusoidal",
         channel_pos="spatial",
         aggregation_mode="CLS_token",
@@ -171,7 +171,7 @@ def classification_metrics(logits, labels):
     }
 
 
-def train(model, dataloader, optimizer, max_grad_norm=1.0):
+def train(model, dataloader, optimizer, max_grad_norm=1.0, loss_function=F.cross_entropy):
     """Train for ONE epoch; return metrics and gradient diagnostics.
 
     The caller controls the epoch loop. Reported gradients are measured before
@@ -180,7 +180,6 @@ def train(model, dataloader, optimizer, max_grad_norm=1.0):
     """
     model.train()
     device = next(model.parameters()).device
-    loss_function = nn.CrossEntropyLoss()
     all_logits, all_labels = [], []
     gradient_norms = []
     parameter_gradient_sums = {name: 0.0 for name, p in model.named_parameters() if p.requires_grad}

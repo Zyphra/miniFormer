@@ -14,7 +14,13 @@ token_cache/
     labram/
         <dataset>/
             <id_name>/        # Cached outputs for this tokenizer and dataset
+synthetic_data/
+    sinusoid_amplitude/       # Generator, datasets, and dataset overview plots
 results/                      # Metrics, plots, and classifier checkpoints
+    synthetic_runs/
+        sinusoid_amplitude/
+            normalization_vs_none/
+            arch_ablations/   # Ablation runner and all experiment artifacts
 ```
 
 Use `token_cache/<tokenizer>/<dataset>/<id_name>/` for each cache. The dataset
@@ -29,8 +35,9 @@ from models.transformer_classifier import TransformerClassifier
 ```
 
 The bag-of-tokens model takes integer token IDs shaped `(batch_size, ...)`.
-It divides token counts by `vocab_size` and returns one binary logit per example.
-Its `loss()` method adds L2 regularization to binary cross-entropy.
+It divides token counts by `vocab_size` and returns one binary logit per example
+by default, or class logits with `n_classes > 2`. Its `loss()` method adds L2
+regularization to cross-entropy.
 
 The transformer takes embeddings shaped
 `(batch_size, channels, coarse_time, codebook_dim)` and returns class logits.
@@ -40,14 +47,14 @@ Both use PyTorch; the transformer also requires `linear_attention_transformer`.
 
 ```sh
 python -m pip install torch linear-attention-transformer numpy matplotlib
-python -m synthetic_data.train_transformer
+python -m synthetic_data.sinusoid_amplitude.train_transformer
 ```
 
-This uses the existing `synthetic_data/outputs/dataset.npz`. Each channel is
+This uses the existing `synthetic_data/sinusoid_amplitude/outputs/dataset.npz`. Each channel is
 split into ten non-overlapping 0.5-second windows at 256 Hz: 128 values per
 patch. The classifier projects `(B, 19, 10, 128)` to `(B, 19, 10, 64)`, adds
 sinusoidal time and spatial channel embeddings, flattens to 190 tokens, and
-prepends CLS. Two attention heads and two layers produce four class logits.
+prepends CLS. Two attention heads and four layers produce four class logits.
 
 `train()` and `test()` are in `models/transformer_classifier.py`. `train()` runs
 one epoch using `zero_grad`, forward, cross-entropy, backward, gradient clipping,
@@ -71,7 +78,7 @@ Test curves are descriptive: this script does not select an epoch or tune
 hyperparameters using the test split.
 
 Each run saves to a new dated folder under
-`results/synthetic_data/sinusoid_amplitude/`. `config.json` is written before
+`results/synthetic_runs/sinusoid_amplitude/`. `config.json` is written before
 training and records model initialization settings, both normalization variants,
 channel coordinates and order, patch settings, optimizer settings, seed, data
 path, and runtime details. The folder also contains `metrics.json`,
@@ -80,6 +87,14 @@ No checkpoints are saved. Use `--output <new-directory>` to choose a run folder;
 existing folders are never overwritten. `--epochs`, `--batch-size`,
 `--learning-rate`, and `--seed` can be adjusted. This experiment uses raw
 waveform patches; no pretrained tokenizer is involved.
+
+### Architecture ablations
+
+`python -m results.synthetic_runs.sinusoid_amplitude.arch_ablations.run` runs positional, aggregation, depth, and
+dataset-size sweeps, each with both positional-normalization settings and seeds
+42, 43, and 44. Dataset sizes include 200, 400, and 800 through 8,000 recordings.
+It reuses SVM, K-means, and bag-of-tokens baselines per dataset size and seed. The runner and all
+artifacts live in [`results/synthetic_runs/sinusoid_amplitude/arch_ablations`](results/synthetic_runs/sinusoid_amplitude/arch_ablations/README.md).
 
 ## LaBraM
 

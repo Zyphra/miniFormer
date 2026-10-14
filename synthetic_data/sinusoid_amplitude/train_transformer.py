@@ -1,6 +1,6 @@
 """Compare positional normalization on raw EEG patches.
 
-Run from the repository root: python -m synthetic_data.train_transformer
+Run from the repository root: python -m synthetic_data.sinusoid_amplitude.train_transformer
 Each run saves config.json, metrics, and plots in its own results folder.
 Training/evaluation live in
 models/transformer_classifier.py; this file prepares data and plots diagnostics.
@@ -10,6 +10,7 @@ import argparse
 import copy
 import json
 from datetime import datetime, timezone
+from inspect import signature
 from pathlib import Path
 
 import numpy as np
@@ -47,13 +48,40 @@ def load_data(path):
     return training, testing, coordinates, n_classes
 
 
-def run_experiment(data_path, epochs=30, batch_size=32, learning_rate=1e-3, seed=42, output=None):
+def fit(model, training, testing, config, loss_function=torch.nn.functional.cross_entropy):
+    """Shared epoch loop; reset randomness and minibatch order for every model."""
+    assert config["epochs"] >= 1 and config["batch_size"] >= 1
+    torch.manual_seed(config["seed"])
+    train_loader = DataLoader(training, batch_size=config["batch_size"], shuffle=True,
+                              generator=torch.Generator().manual_seed(config["seed"]))
+    train_evaluation = DataLoader(training, batch_size=config["batch_size"], shuffle=False)
+    test_loader = DataLoader(testing, batch_size=config["batch_size"], shuffle=False)
+    optimizer = torch.optim.Adam(model.parameters(), **config["optimizer_settings"])
+    history = [{"epoch": 0, "train": test(model, train_evaluation),
+                "test": test(model, test_loader)}]
+    for epoch in range(1, config["epochs"] + 1):
+        optimization = train(model, train_loader, optimizer, max_grad_norm=config["max_grad_norm"],
+                             loss_function=loss_function)
+        assert not optimization["missing_gradients"], optimization["missing_gradients"]
+        train_metrics, test_metrics = test(model, train_evaluation), test(model, test_loader)
+        history.append({"epoch": epoch, "train": train_metrics,
+                        "test": test_metrics, "optimization": optimization})
+        print(
+            f"epoch={epoch:02d}/{config['epochs']} "
+            f"CE train/test={train_metrics['cross_entropy']:.3f}/{test_metrics['cross_entropy']:.3f} "
+            f"balanced accuracy={train_metrics['balanced_accuracy']:.1%}/{test_metrics['balanced_accuracy']:.1%} "
+            f"gradient L2={np.mean(optimization['gradient_norms']):.3f}", flush=True,
+        )
+    return history
+
+
+def run_experiment(data_path, epochs=30, batch_size=32, learning_rate=1e-3, seed=42,
+                   output=None, **model_overrides):
     """Save the initial configuration, then return models, histories, and config."""
     if epochs < 1:
         raise ValueError("epochs must be positive")
     training, testing, coordinates, n_classes = load_data(data_path)
-    train_evaluation = DataLoader(training, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(testing, batch_size=batch_size, shuffle=False)
+    assert set(model_overrides) <= {"temporal_pos", "channel_pos", "aggregation_mode", "depth"}
 
     torch.manual_seed(seed)
     model_settings = dict(
@@ -61,13 +89,10 @@ def run_experiment(data_path, epochs=30, batch_size=32, learning_rate=1e-3, seed
         channels=19,
         coarse_time=10,
         codebook_dim=128,  # Here each input is a raw waveform patch, not a codebook lookup.
-        model_dim=64,
-        heads=2,
-        depth=2,
-        temporal_pos="sinusoidal",
-        channel_pos="spatial",
-        aggregation_mode="CLS_token",
+        **{name: signature(TransformerClassifier).parameters[name].default for name in
+           ("model_dim", "heads", "depth", "temporal_pos", "channel_pos", "aggregation_mode")},
     )
+    model_settings.update(model_overrides)
     base_model = TransformerClassifier(**model_settings, channel_coords=coordinates, normalize=False)
     optimizer_settings = {"lr": learning_rate, "betas": (0.9, 0.999), "eps": 1e-8, "weight_decay": 0}
     config = {
@@ -90,7 +115,7 @@ def run_experiment(data_path, epochs=30, batch_size=32, learning_rate=1e-3, seed
         config["coordinate_frame"] = str(data["coordinate_frame"])
     started = datetime.now(timezone.utc)
     if output is None:
-        results = Path(__file__).resolve().parents[1] / "results/synthetic_data/sinusoid_amplitude"
+        results = Path(__file__).resolve().parents[2] / "results/synthetic_runs/sinusoid_amplitude"
         output = results / started.strftime("transformer_%Y%m%dT%H%M%S_%fZ")
     output = Path(output).resolve()
     # A new folder per run protects previous experiments from accidental overwrite.
@@ -100,37 +125,17 @@ def run_experiment(data_path, epochs=30, batch_size=32, learning_rate=1e-3, seed
     (output / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     print(f"Initial configuration: {output / 'config.json'}", flush=True)
     print(json.dumps({**model_settings, "normalize": config["normalize"]}, indent=2), flush=True)
-    print("Shapes: (B,19,1280) -> (B,19,10,128) -> (B,190,64) -> (B,191,64) -> (B,K)", flush=True)
     models, histories = {}, {}
 
     for normalize in config["normalize"]:
         # Same initial weights and minibatch order isolate the normalize flag.
         model = copy.deepcopy(base_model)
         model.normalize = normalize
-        torch.manual_seed(seed)
-        generator = torch.Generator().manual_seed(seed)
-        train_loader = DataLoader(training, batch_size=batch_size, shuffle=True, generator=generator)
-        optimizer = torch.optim.Adam(model.parameters(), **optimizer_settings)
-        history = [{"epoch": 0, "train": test(model, train_evaluation),
-                    "test": test(model, test_loader)}]
-
-        for epoch in range(1, epochs + 1):
-            optimization = train(model, train_loader, optimizer, max_grad_norm=1.0)
-            # Both curves evaluate the same, fixed end-of-epoch weights.
-            train_metrics = test(model, train_evaluation)
-            test_metrics = test(model, test_loader)
-            history.append({"epoch": epoch, "train": train_metrics,
-                            "test": test_metrics, "optimization": optimization})
-            print(
-                f"normalize={normalize} epoch={epoch:02d}/{epochs} "
-                f"CE train/test={train_metrics['cross_entropy']:.3f}/{test_metrics['cross_entropy']:.3f} "
-                f"balanced accuracy={train_metrics['balanced_accuracy']:.1%}/{test_metrics['balanced_accuracy']:.1%} "
-                f"gradient L2={np.mean(optimization['gradient_norms']):.3f}",
-                flush=True,
-            )
+        print(f"normalize={normalize}", flush=True)
         models[normalize] = model
-        histories[normalize] = history
+        histories[normalize] = fit(model, training, testing, config)
 
+    save_diagnostics(histories, config)
     return models, histories, config
 
 
@@ -138,8 +143,12 @@ def plot_diagnostics(histories, config):
     import matplotlib.pyplot as plt
     from matplotlib.colors import LogNorm
 
-    curves, axes = plt.subplots(2, 3, figsize=(13, 7), constrained_layout=True)
-    curves.suptitle("Raw EEG patches · 0.5 s · 19 channels · 2 heads · 2 layers")
+    histories = {f"normalize={key}" if isinstance(key, bool) else key: value
+                 for key, value in histories.items()}
+    n_variants = len(histories)
+    curves, axes = plt.subplots(n_variants, 3, figsize=(13, 3.5 * n_variants),
+                               constrained_layout=True, squeeze=False)
+    curves.suptitle(config["model_class"])
     metrics = [("cross_entropy", "Cross-entropy (nats)"),
                ("balanced_accuracy", "Balanced accuracy"),
                ("prediction_entropy", "Prediction entropy (nats)")]
@@ -151,19 +160,21 @@ def plot_diagnostics(histories, config):
                 ax.plot(epochs, [entry[split][key] for entry in history], label=split, color=color)
             baseline = 1 / config["n_classes"] if key == "balanced_accuracy" else np.log(config["n_classes"])
             ax.axhline(baseline, color="gray", ls=":", label="Uniform predictions")
-            ax.set(title=f"normalize={normalize} · {title}", xlabel="Epoch")
+            ax.set(title=f"{normalize} · {title}", xlabel="Epoch")
             if key == "balanced_accuracy":
                 ax.set_ylim(0, 1)
             ax.grid(alpha=0.2)
             ax.legend(fontsize=8)
 
-    gradients, axes = plt.subplots(2, 2, figsize=(14, 12), constrained_layout=True)
+    n_parameters = len(next(iter(histories.values()))[1]["optimization"]["parameter_gradient_norms"])
+    gradients, axes = plt.subplots(2, n_variants, figsize=(7 * n_variants, max(12, n_parameters * 0.18)),
+                                  constrained_layout=True, squeeze=False)
     gradients.suptitle("Gradient checks · measured before clipping at global L2 = 1")
     for column, (normalize, history) in enumerate(histories.items()):
         steps = [norm for entry in history[1:] for norm in entry["optimization"]["gradient_norms"]]
-        axes[0, column].plot(np.arange(1, len(steps) + 1), steps, lw=0.8)
+        axes[0, column].plot(np.arange(1, len(steps) + 1), steps, lw=0.8, marker=".", markersize=2)
         axes[0, column].axhline(1, color="gray", ls=":", label="Clipping threshold")
-        axes[0, column].set(title=f"normalize={normalize}", xlabel="Optimizer step",
+        axes[0, column].set(title=normalize, xlabel="Optimizer step",
                             ylabel="Global gradient L2 norm", yscale="log")
         axes[0, column].legend()
         names = list(history[1]["optimization"]["parameter_gradient_norms"])
@@ -178,7 +189,8 @@ def plot_diagnostics(histories, config):
         axes[1, column].tick_params(axis="y", labelsize=6)
         gradients.colorbar(heatmap, ax=axes[1, column], label="Gradient L2")
 
-    confusions, axes = plt.subplots(2, 2, figsize=(9, 8), constrained_layout=True)
+    confusions, axes = plt.subplots(2, n_variants, figsize=(4.5 * n_variants, 8),
+                                   constrained_layout=True, squeeze=False)
     confusions.suptitle("Final-epoch predictions · rows = true class")
     for column, (normalize, history) in enumerate(histories.items()):
         for row, split in enumerate(("train", "test")):
@@ -189,10 +201,22 @@ def plot_diagnostics(histories, config):
             for i, j in np.ndindex(matrix.shape):
                 ax.text(j, i, str(matrix[i, j]), ha="center", va="center",
                         color="white" if matrix[i, j] > matrix.max() / 2 else "black")
-            ax.set(title=f"normalize={normalize} · {split} · BA={metrics['balanced_accuracy']:.1%}",
+            ax.set(title=f"{normalize} · {split} · BA={metrics['balanced_accuracy']:.1%}",
                    xlabel="Predicted class", ylabel="True class",
                    xticks=range(config["n_classes"]), yticks=range(config["n_classes"]))
     return {"learning_curves": curves, "gradients": gradients, "confusion_matrices": confusions}
+
+
+def save_diagnostics(histories, config):
+    import matplotlib.pyplot as plt
+
+    output = Path(config["output"])
+    (output / "metrics.json").write_text(
+        json.dumps({"config": config, "histories": histories}, indent=2, allow_nan=False) + "\n"
+    )
+    for name, figure in plot_diagnostics(histories, config).items():
+        figure.savefig(output / f"{name}.png", dpi=160)
+        plt.close(figure)
 
 
 def main():
@@ -204,20 +228,16 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--output", type=Path,
-                        help="New run directory; defaults to a dated folder in results/synthetic_data/sinusoid_amplitude")
+                        help="New run directory; defaults to a dated folder in results/synthetic_runs/sinusoid_amplitude")
     args = parser.parse_args()
     torch.set_num_threads(args.threads)
     import matplotlib
     matplotlib.use("Agg")
 
-    models, histories, config = run_experiment(
+    _, _, config = run_experiment(
         args.data, args.epochs, args.batch_size, args.learning_rate, args.seed, args.output,
     )
-    figures = plot_diagnostics(histories, config)
     output = Path(config["output"])
-    for name, figure in figures.items():
-        figure.savefig(output / f"{name}.png", dpi=160)
-    (output / "metrics.json").write_text(json.dumps({"config": config, "histories": histories}, indent=2) + "\n")
     print(f"Config, plots, and metrics: {output}")
 
 

@@ -1,0 +1,38 @@
+{
+  "svm": {
+    "kernel": "linear",
+    "C": 1.0,
+    "scaling": "StandardScaler fitted on training data"
+  },
+  "separation_check": "Pairwise affine hyperplane feasibility on all 800 saved points; uses all labels for geometry only, separately from held-out SVM evaluation.",
+  "features": {
+    "all_channel_mean": {
+      "n_features": 4,
+      "train_accuracy": 0.840625,
+      "test_accuracy": 0.81875,
+      "nonseparable_class_pairs": [
+        [
+          1,
+          2
+        ]
+      ]
+    },
+    "boosted_channel_mean": {
+      "n_features": 4,
+      "train_accuracy": 0.9609375,
+      "test_accuracy": 0.95,
+      "nonseparable_class_pairs": [
+        [
+          1,
+          2
+        ]
+      ]
+    },
+    "all_channels_flattened": {
+      "n_features": 76,
+      "train_accuracy": 1.0,
+      "test_accuracy": 1.0,
+      "nonseparable_class_pairs": []
+    }
+  }
+}

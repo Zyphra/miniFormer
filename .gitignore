@@ -7,6 +7,14 @@
 !/token_cache/**/.gitkeep
 /results/*
 !/results/.gitkeep
+!/results/synthetic_runs/
+/results/synthetic_runs/*
+!/results/synthetic_runs/sinusoid_amplitude/
+/results/synthetic_runs/sinusoid_amplitude/*
+!/results/synthetic_runs/sinusoid_amplitude/arch_ablations/
+/results/synthetic_runs/sinusoid_amplitude/arch_ablations/*
+!/results/synthetic_runs/sinusoid_amplitude/arch_ablations/*.py
+!/results/synthetic_runs/sinusoid_amplitude/arch_ablations/README.md
 
 # NumPy archives, wherever they are generated.
 *.npz

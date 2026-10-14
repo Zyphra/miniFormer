@@ -4,23 +4,26 @@ from torch.nn import functional as F
 
 
 class BagOfTokensClassifier(nn.Module):
-    """Binary logistic regression on token counts divided by vocab_size.
+    """Logistic regression on token counts divided by vocab_size.
 
     Input: torch.long token IDs in [0, vocab_size), shaped (batch_size, ...).
-    Output: raw logits shaped (batch_size, 1), for BCEWithLogitsLoss.
+    Output: (batch_size, 1) for binary labels, or (batch_size, n_classes).
     loss() adds L2 regularization to weight; smaller C means a stronger penalty.
     """
 
-    def __init__(self, vocab_size, C=1.0):
+    def __init__(self, vocab_size, C=1.0, n_classes=2):
         super().__init__()
         if vocab_size < 1:
             raise ValueError("vocab_size must be positive")
         if not C > 0:
             raise ValueError("C must be positive")
+        assert isinstance(n_classes, int) and n_classes >= 2
         self.vocab_size = vocab_size
         self.C = C
-        self.weight = nn.Parameter(torch.zeros(vocab_size, 1))
-        self.bias = nn.Parameter(torch.zeros(1))
+        self.n_classes = n_classes
+        n_outputs = 1 if n_classes == 2 else n_classes
+        self.weight = nn.Parameter(torch.zeros(vocab_size, n_outputs))
+        self.bias = nn.Parameter(torch.zeros(n_outputs))
 
     def forward(self, token_ids):
         token_ids = token_ids.flatten(start_dim=1)
@@ -34,15 +37,18 @@ class BagOfTokensClassifier(nn.Module):
         return features @ self.weight + self.bias
 
     def loss(self, logits, targets, n_train):
-        """Mean binary cross-entropy + L2, with sklearn's unweighted C scaling.
+        """Mean cross-entropy + L2, with sklearn's unweighted C scaling.
 
-        targets contains binary labels (0 or 1).
+        targets contains class labels in [0, n_classes).
         n_train is the full training-set size, even when using minibatches.
         Only weight is penalized; bias is unpenalized.
         """
         if n_train < 1:
             raise ValueError("n_train must be positive")
-        targets = targets.to(logits).reshape_as(logits)
-        cross_entropy = F.binary_cross_entropy_with_logits(logits, targets)
+        if self.n_classes == 2:
+            targets = targets.to(logits).reshape_as(logits)
+            cross_entropy = F.binary_cross_entropy_with_logits(logits, targets)
+        else:
+            cross_entropy = F.cross_entropy(logits, targets.long())
         l2 = self.weight.square().sum() / (2 * self.C * n_train)
         return cross_entropy + l2

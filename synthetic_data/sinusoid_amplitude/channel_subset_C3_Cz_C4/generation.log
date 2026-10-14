@@ -1,0 +1,146 @@
+{
+  "config": {
+    "n_classes": 4,
+    "samples_per_class": 200,
+    "sampling_rate": 256,
+    "duration": 5,
+    "frequency_start": 10,
+    "frequency_spacing": 0.075,
+    "dominant_amplitude": 2,
+    "background_amplitude": 0.5,
+    "amplitude_jitter": 0.1,
+    "noise_std": 0.5,
+    "spatial_length": 0.08,
+    "noise_spatial_fraction": 0.5,
+    "boost_channels": [
+      "C3",
+      "Cz",
+      "C4"
+    ],
+    "seed": 42
+  },
+  "frequencies_hz": [
+    10.0,
+    10.075,
+    10.15,
+    10.225
+  ],
+  "montage": "standard_1020",
+  "channel_names": [
+    "Fp1",
+    "Fp2",
+    "F7",
+    "F3",
+    "Fz",
+    "F4",
+    "F8",
+    "T7",
+    "C3",
+    "Cz",
+    "C4",
+    "T8",
+    "P7",
+    "P3",
+    "Pz",
+    "P4",
+    "P8",
+    "O1",
+    "O2"
+  ],
+  "boost_channels": [
+    "C3",
+    "Cz",
+    "C4"
+  ],
+  "coordinate_frame": "head",
+  "coordinate_units": "m",
+  "fft_bin_spacing_hz": 0.2,
+  "features": "Mean of per-channel spectral projection power",
+  "channel_power_shape": [
+    800,
+    19,
+    4
+  ],
+  "classifier_feature_shape": [
+    800,
+    4
+  ],
+  "feature_scaling": "StandardScaler fitted on training power features",
+  "shape": [
+    800,
+    19,
+    1280
+  ],
+  "kmeans": {
+    "n_clusters": 4,
+    "n_init": 20,
+    "random_state": 43,
+    "cluster_to_class": [
+      3,
+      0,
+      2,
+      1
+    ],
+    "train_accuracy": 0.4734375,
+    "test_accuracy": 0.46875,
+    "confusion_matrix_test": [
+      [
+        27,
+        10,
+        0,
+        3
+      ],
+      [
+        14,
+        14,
+        2,
+        10
+      ],
+      [
+        2,
+        5,
+        9,
+        24
+      ],
+      [
+        4,
+        0,
+        11,
+        25
+      ]
+    ]
+  },
+  "svm": {
+    "kernel": "linear",
+    "C": 1.0,
+    "train_accuracy": 0.840625,
+    "test_accuracy": 0.81875,
+    "confusion_matrix_test": [
+      [
+        38,
+        1,
+        1,
+        0
+      ],
+      [
+        5,
+        22,
+        12,
+        1
+      ],
+      [
+        0,
+        6,
+        32,
+        2
+      ],
+      [
+        0,
+        0,
+        1,
+        39
+      ]
+    ]
+  }
+}
+Saved dataset, summary, and plots to /Users/jonhuml/Desktop/miniFormer/results/arch_ablations/channel_subset_C3_Cz_C4
