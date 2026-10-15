@@ -1,4 +1,4 @@
-"""Run with python -m unittest results.synthetic_runs.sinusoid_amplitude.arch_ablations.test_ablations.
+"""Run with python -m unittest tests.test_ablations.
 
 The integration test exercises three seeds on 20..160 recordings, one epoch.
 Validation artifacts stay in a new validation_* directory under arch_ablations.

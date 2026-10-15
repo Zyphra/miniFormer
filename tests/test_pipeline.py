@@ -13,8 +13,8 @@ from unittest import TestCase
 import numpy as np
 import torch
 
-from .cache import provenance, write_cache
-from .pipeline import batches, read_dataset, sha256
+from tokenization.cache import provenance, write_cache
+from tokenization.pipeline import batches, read_dataset, sha256
 
 
 def upstream_definitions(path, names, namespace):

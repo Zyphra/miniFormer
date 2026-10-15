@@ -6,7 +6,7 @@ Preserves eyes-open, eyes-closed, and P300 recordings, subject splits, and label
 | File | Purpose |
 | --- | --- |
 | [export.py](export.py) | Read EDFs through NeuroAI and save the dataset once. |
-| [test_export.py](test_export.py) | Compare every recording, window, split, and label against NeuroAI. |
+| [test_export.py](../../tests/test_export.py) | Compare every recording, window, split, and label against NeuroAI. |
 | `data/cache.json` | Subjects, conditions, labels, splits, window boundaries, and provenance. |
 | `data/*.pt` | Complete EEG, five-second window views, and example IDs; readable with PyTorch. |
 

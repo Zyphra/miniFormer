@@ -29,8 +29,8 @@ class TransformerClassifier(nn.Module):
         heads=2,
         depth=4, #4 seems to be at sweet spot of small + good performance
         temporal_pos="sinusoidal",
-        channel_pos="spatial",
-        aggregation_mode="CLS_token",
+        channel_pos="learned",
+        aggregation_mode="mean_pool_final",
         normalize=True,
         channel_coords=None,
     ):

@@ -1,5 +1,6 @@
-"""Integration check against NeuroAI; run after exporting in its environment."""
+"""Run in the NeuroAI environment: python -m pytest tests/test_export.py."""
 
+from importlib import import_module
 import json
 from pathlib import Path
 
@@ -12,12 +13,13 @@ def test_cache_matches_native_pipeline(tmp_path):
     from mne.io.constants import FIFF
     from neuralbench.data import Data
     from neuralset.events.etypes import Eeg
-    from export import sha256
+    sha256 = import_module("dataset cache.depression.export").sha256
 
-    path = Path(__file__).parent / "data/cache.json"
+    dataset = Path(__file__).resolve().parents[1] / "dataset cache/depression"
+    path = dataset / "data/cache.json"
     cache = json.loads(path.read_text())
     assert cache["schema_version"] == 2
-    assert cache["provenance"]["exporter_sha256"] == sha256(Path(__file__).with_name("export.py"))
+    assert cache["provenance"]["exporter_sha256"] == sha256(dataset / "export.py")
     data = Data(**cache["data_config"])
     source = data.study.steps["source"]
     source.infra.folder = tmp_path

@@ -11,4 +11,4 @@ python -m tokenization.cache dac --repo <repo> --checkpoint <weights> --output <
 
 - Selected DAC checkpoint: `/data/groups/bci/chris/workspace/bci_descript-audio-codec/runs/vq_long_006/best/dac/weights.pth`.
 - DAC architecture comes from the checkpoint. Set classifier `codebook_dim=tokenizer.codebook.shape[1]`.
-- Verify with `python -m tokenization.test_pipeline dac --repo <repo> --checkpoint <weights>`; use `tfm` or `labram` for those adapters.
+- Verify with `python -m tests.test_pipeline dac --repo <repo> --checkpoint <weights>`; use `tfm` or `labram` for those adapters.
