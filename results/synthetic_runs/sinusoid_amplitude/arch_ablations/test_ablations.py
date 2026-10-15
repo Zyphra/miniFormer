@@ -65,6 +65,7 @@ class AblationTests(unittest.TestCase):
               patch.object(run, "run_experiment", wraps=run.run_experiment) as transformer,
               run.threadpool_limits(limits=2)):
             results = run.run_suite(output, epochs=1, seeds=seeds, sizes=sizes)
+        run.save_report(output, note="VALIDATION ONLY: one epoch on reduced datasets; not production results.")
         self.assertEqual((transformer.call_count, power.call_count, bag.call_count), (51, 12, 12))
         self.assertEqual(len(results), 21)
         default = json.loads((output / "seed_42/1x/default/config.json").read_text())
