@@ -1,6 +1,9 @@
 # Independent tokenizer repositories (including their own .git directories).
 /tokenizers/
 
+# Exported EEG tensors and metadata; dataset code stays tracked beside them.
+/dataset cache/depression/data/
+
 # Generated outputs; keep the empty directory structure in Git.
 /token_cache/**
 !/token_cache/**/
