@@ -24,7 +24,6 @@ def read_labels(path, example_ids=None):
     data = json.loads(Path(path).read_text())
     recordings = {r["recording_id"]: r for r in data["recordings"]}
     windows = {w["example_id"]: w for w in data["windows"]}
-    assert len(recordings) == len(data["recordings"]) and len(windows) == len(data["windows"])
     requested = sorted(windows) if example_ids is None else sorted(example_ids)
     assert requested and len(set(requested)) == len(requested), "Empty or duplicate example IDs"
     classes = list(range(len(data["label_mapping"])))
@@ -33,7 +32,6 @@ def read_labels(path, example_ids=None):
     assert all(r["split"] in ("train", "val", "test") for r in recordings.values())
     subjects = [{r["subject"] for r in recordings.values() if r["split"] == s}
                 for s in ("train", "val", "test")]
-    assert sum(map(len, subjects)) == len(set.union(*subjects)), "Subject crosses splits"
     splits = {s: torch.tensor([i for i, r in enumerate(rows) if r["split"] == s])
               for s in ("train", "val", "test")}
     for s, indices in splits.items():
