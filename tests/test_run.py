@@ -2,7 +2,9 @@
 
 import csv
 from inspect import signature
+from itertools import product
 import json
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -54,7 +56,7 @@ def check(directory):
             start_sample=i * 1280, stop_sample=(i + 1) * 1280) for i in range(2))
     metadata = dataset / "cache.json"
     metadata.write_text(json.dumps(data))
-    write_cache(dataset, ToyTokenizer(), cache, {"fixture": True})
+    write_cache(dataset, ToyTokenizer(), cache, {"fixture": True, "tokenizer": "dac"})
     # Reverse both shard and example order: alignment must use IDs, not loading order.
     cache_meta = json.loads((cache / "metadata.json").read_text())
     for file in cache.glob("[0-9]*.pt"):
@@ -65,15 +67,17 @@ def check(directory):
     (cache / "metadata.json").write_text(json.dumps(cache_meta))
     before = {p: sha256(p) for folder in (dataset, cache) for p in folder.iterdir()}
     sources = [{"name": "cached", "cache": str(cache)},
-               {"name": "live", "tokenizer": "dac", "repo": "/fixture", "checkpoint": "/fixture/weights.pth"}]
-    requested = [11, 3, 7, 1, 9, 5]
+               {"name": "live", "tokenizer": "dac", "repo": "/fixture", "checkpoint": "/fixture/weights.pth"},
+               {"name": "repeat", "cache": str(cache)}]
+    names, seeds, data_seed = [s["name"] for s in sources], [33, 34, 35], 71
+    requested = [11, 3, 7, 1, 9, 5, 0, 2]
     _, expected, labels, splits = runner.read_labels(metadata, requested)
-    assert expected.tolist() == [1, 3, 5, 7, 9, 11]
-    assert labels.tolist() == [0, 1, 0, 1, 0, 1]
+    assert expected.tolist() == [0, 1, 2, 3, 5, 7, 9, 11]
+    assert labels.tolist() == [0, 0, 1, 1, 0, 1, 0, 1]
     assert {s: expected[i].tolist() for s, i in splits.items()} == {
-        "train": [1, 3], "val": [5, 7], "test": [9, 11]}
+        "train": [0, 1, 2, 3], "val": [5, 7], "test": [9, 11]}
     actual_test, actual_train = runner.test, runner.train
-    evaluations, states = [], []
+    evaluations, states, orders, initial_weights = [], [], [], []
 
     def evaluate(model, loader):
         metrics = actual_test(model, loader)
@@ -83,8 +87,12 @@ def check(directory):
             metrics["balanced_accuracy"] = [.6, .9, .7][phase]
         return metrics
 
-    def train(model, *args):
-        metrics = actual_train(model, *args)
+    def train(model, loader, *args):
+        assert loader.generator.initial_seed() == data_seed
+        epoch_batches = list(loader)
+        orders.append(torch.cat([inputs[:, 0, 0] for inputs, _ in epoch_batches]).tolist())
+        initial_weights.append(model[1].input_projection.weight.detach().clone())
+        metrics = actual_train(model, epoch_batches, *args)
         states.append({k: v.detach().clone() for k, v in model[1].state_dict().items()})
         assert model[0].weight.grad is None
         return metrics
@@ -93,22 +101,44 @@ def check(directory):
     with patch.object(dac, "Tokenizer", ToyTokenizer), \
          patch("tokenization.cache.provenance", return_value={"fixture": True}), \
          patch.object(runner, "test", side_effect=evaluate), patch.object(runner, "train", side_effect=train):
-        runner.run(sources, metadata, output, epochs=3, batch_size=2, example_ids=requested)
+        rows = runner.run(sources, metadata, output, epochs=3, batch_size=2,
+                          seeds=seeds, data_seed=data_seed, example_ids=requested)
     assert ToyTokenizer.prepared == 6, "Live preprocessing ran more than once per recording"
-    assert len(evaluations) == 8 and all(evaluations[i] is evaluations[i + 1] for i in (0, 1, 4, 5))
-    assert evaluations[3] is not evaluations[0] and evaluations[7] is not evaluations[4]
+    assert len(evaluations) == 36 and len(rows) == 9
+    for i in range(9):
+        assert evaluations[4 * i] is evaluations[4 * i + 1] is evaluations[4 * i + 2]
+        assert evaluations[4 * i + 3] is not evaluations[4 * i]
+        assert orders[3 * i:3 * i + 3] == orders[:3], "Batch order depends on classifier seed"
+    assert len({tuple(order) for order in orders[:3]}) > 1, "Shuffle never changes between epochs"
+    assert all(not torch.equal(initial_weights[3 * i], initial_weights[3 * j]) for i, j in ((0, 1), (0, 2), (1, 2)))
     assert all(sha256(p) == digest for p, digest in before.items())
     assert set(before) == {p for folder in (dataset, cache) for p in folder.iterdir()}, "Source files changed"
     with (output / "comparison.csv").open() as stream:
-        assert [r["source"] for r in csv.DictReader(stream)] == ["cached", "live"]
+        detailed = list(csv.DictReader(stream))
+    assert [(r["source"], int(r["seed"])) for r in detailed] == list(product(names, seeds))
+    assert all(r["tokenizer"] == "dac" and int(r["data_seed"]) == data_seed for r in detailed)
+    with (output / "summary.csv").open() as stream:
+        summary = list(csv.DictReader(stream))
+    assert [r["source"] for r in summary] == names
+    for result in summary:
+        assert int(result["n_seeds"]) == 3 and int(result["data_seed"]) == data_seed
+        group = [r for r in detailed if r["source"] == result["source"]]
+        for metric in ("val_balanced_accuracy", "test_balanced_accuracy", "test_cross_entropy"):
+            values = [float(r[metric]) for r in group]
+            mean = sum(values) / 3
+            std = math.sqrt(sum((v - mean)**2 for v in values) / 2)
+            assert math.isclose(float(result[f"{metric}_mean"]), mean, abs_tol=1e-12)
+            assert math.isclose(float(result[f"{metric}_std"]), std, abs_tol=1e-12)
+    assert float(summary[0]["test_cross_entropy_std"]) > 0
     saved = []
-    for index, name in enumerate(("cached", "live")):
-        folder = output / name
+    for index, (name, seed) in enumerate(product(names, seeds)):
+        folder = output / name / f"seed_{seed}"
         assert {p.name for p in folder.iterdir()} == {"config.json", "metrics.json", "classifier.pt"}
         metrics = json.loads((folder / "metrics.json").read_text())
         config = json.loads((folder / "config.json").read_text())
         assert metrics["best_epoch"] == 2 and metrics["test"]["n_examples"] == 2
         assert config["classifier"]["codebook_dim"] == 16
+        assert config["seed"] == seed and config["data_seed"] == data_seed
         for key in ("model_dim", "heads", "depth", "temporal_pos", "channel_pos", "aggregation_mode", "normalize"):
             assert config["classifier"][key] == signature(runner.TransformerClassifier).parameters[key].default
         state = torch.load(folder / "classifier.pt", weights_only=True)
@@ -116,10 +146,19 @@ def check(directory):
         assert all(torch.equal(v, states[3 * index + 1][k]) for k, v in state.items())
         assert any(not torch.equal(v, states[3 * index + 2][k]) for k, v in state.items())
         saved.append((state, metrics, config["ids_tensor_sha256"]))
-    assert saved[0][1:] == saved[1][1:]
-    assert all(torch.equal(v, saved[1][0][k]) for k, v in saved[0][0].items())
+    for i in range(6):
+        assert saved[i][1:] == saved[i + 3][1:]
+        assert all(torch.equal(v, saved[i + 3][0][k]) for k, v in saved[i][0].items())
     case = TestCase()
-    with case.assertRaisesRegex(AssertionError, "already exists"):
+    for incomplete in (rows[:-1], rows[:-1] + [rows[0]], rows + [rows[0]],
+                       rows[:-1] + [{**rows[-1], "seed": 99}]):
+        with case.assertRaisesRegex(AssertionError, "source/seed"):
+            runner.summarize(incomplete, names, seeds)
+    for invalid_seeds in ([], [33], [33, 33]):
+        with case.assertRaisesRegex(AssertionError, "seed"):
+            runner.run(sources, metadata, directory / "invalid", seeds=invalid_seeds)
+    assert not (directory / "invalid").exists()
+    with case.assertRaises(FileExistsError):
         runner.run(sources, metadata, output)
     with case.assertRaisesRegex(AssertionError, "duplicate"):
         runner.read_labels(metadata, [1, 1])
@@ -155,7 +194,7 @@ def check(directory):
     file.write_bytes(b"corrupt")
     with case.assertRaisesRegex(AssertionError, "Corrupt cache"):
         runner.load_tokens(sources[0], metadata, data)
-    print("PASS: cached/live equivalence, ID alignment, split isolation, checkpoint selection, no token writes, failures")
+    print("PASS: seed grid, summaries, fixed batch order, cached/live equivalence, checkpoint selection, failures")
 
 
 if __name__ == "__main__":
