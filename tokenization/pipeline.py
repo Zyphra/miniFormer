@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+from time import perf_counter
 
 import torch
 
@@ -66,7 +67,8 @@ def batches(dataset, tokenizer, batch_size=32):
     codebook = tokenizer.codebook
     assert codebook.ndim == 2 and codebook.dtype == torch.float32
     assert torch.isfinite(codebook).all()
-    for row, windows in zip(data["recordings"], examples):
+    started, reported, n_examples = perf_counter(), perf_counter(), 0
+    for recording_index, (row, windows) in enumerate(zip(data["recordings"], examples)):
         path = Path(dataset) / row["signal_file"]
         assert sha256(path) == row["signal_sha256"], path
         cached = torch.load(path, map_location="cpu", weights_only=True)
@@ -96,4 +98,9 @@ def batches(dataset, tokenizer, batch_size=32):
             assert 0 <= ids.min() and ids.max() < len(codebook)
             yield {"recording_id": row["recording_id"], "ids": ids,
                    "example_ids": expected_ids[start:start + batch_size]}
+        n_examples += len(windows)
+        if perf_counter() - reported >= 60 or recording_index + 1 == len(examples):
+            print(f"Tokenized {recording_index + 1}/{len(examples)} recordings, "
+                  f"{n_examples:,} windows in {perf_counter() - started:.1f}s", flush=True)
+            reported = perf_counter()
     assert torch.equal(tokenizer.codebook, codebook), "Inference changed the codebook"

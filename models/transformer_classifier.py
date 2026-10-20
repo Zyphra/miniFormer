@@ -196,19 +196,24 @@ def train(model, dataloader, optimizer, max_grad_norm=1.0, loss_function=F.cross
             raise FloatingPointError("Non-finite training loss")
         loss.backward()
 
-        # Inspect gradients before the optimizer changes the weights.
-        squared_norm = 0.0
+        # Collect diagnostics on the GPU, then transfer them together.
+        gradients = {}
         for name, parameter in model.named_parameters():
             if not parameter.requires_grad:
                 continue
             if parameter.grad is None:
                 missing_gradients.add(name)
-                continue
-            if not torch.isfinite(parameter.grad).all():
-                raise FloatingPointError(f"Non-finite gradient in {name}")
-            norm = parameter.grad.norm().item()
-            parameter_gradient_sums[name] += norm
-            squared_norm += norm ** 2
+            else:
+                gradients[name] = parameter.grad
+        squared_norm = 0.0
+        if gradients:
+            finite = torch.stack([torch.isfinite(g).all() for g in gradients.values()]).cpu().tolist()
+            norms = torch.stack([g.norm() for g in gradients.values()]).cpu().tolist()
+            for name, is_finite, norm in zip(gradients, finite, norms):
+                if not is_finite:
+                    raise FloatingPointError(f"Non-finite gradient in {name}")
+                parameter_gradient_sums[name] += norm
+                squared_norm += norm ** 2
         gradient_norms.append(squared_norm ** 0.5)
 
         if max_grad_norm is not None:

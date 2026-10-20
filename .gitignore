@@ -3,6 +3,9 @@
 
 # Exported EEG tensors and metadata; dataset code stays tracked beside them.
 /dataset cache/depression/data/
+/dataset cache/seizure/data/
+/dataset cache/seizure/.seizure-*/
+/dataset cache/seizure/*.log
 
 # Generated outputs; keep the empty directory structure in Git.
 /token_cache/**

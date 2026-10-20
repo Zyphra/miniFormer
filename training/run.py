@@ -11,9 +11,10 @@ import os
 from pathlib import Path
 from statistics import mean, stdev
 import sys
+from time import perf_counter
 
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from models.transformer_classifier import TransformerClassifier, train, test
 from tokenization.pipeline import batches, sha256
@@ -28,15 +29,36 @@ def read_labels(path, example_ids=None):
     assert requested and len(set(requested)) == len(requested), "Empty or duplicate example IDs"
     classes = list(range(len(data["label_mapping"])))
     rows = [recordings[windows[i]["recording_id"]] for i in requested]
-    labels = torch.tensor([r["label"] for r in rows], dtype=torch.long)
+    labels = torch.tensor([windows[i]["label"] if "label" in windows[i] else r["label"]
+                           for i, r in zip(requested, rows)], dtype=torch.long)
     assert all(r["split"] in ("train", "val", "test") for r in recordings.values())
     subjects = [{r["subject"] for r in recordings.values() if r["split"] == s}
                 for s in ("train", "val", "test")]
+    assert all(subjects[i].isdisjoint(subjects[j]) for i in range(3) for j in range(i)), \
+        "Subject crosses splits"
     splits = {s: torch.tensor([i for i, r in enumerate(rows) if r["split"] == s])
               for s in ("train", "val", "test")}
     for s, indices in splits.items():
         assert len(indices) and labels[indices].unique().tolist() == classes, f"Missing classes in {s}"
     return data, torch.tensor(requested), labels, splits
+
+
+def make_loaders(ids, labels, splits, batch_size, data_seed, sampling=None):
+    """Preserve the dataset's training sampler; validation/test keep every window."""
+    assert sampling in (None, {"name": "ClassificationSampler"}), sampling
+    loaders = {}
+    for split, indices in splits.items():
+        generator = torch.Generator().manual_seed(data_seed)
+        sampler = None
+        if split == "train" and sampling is not None:
+            targets = labels[indices]
+            counts = torch.bincount(targets).float()
+            weights = (len(targets) / (len(counts) * counts))[targets]
+            sampler = WeightedRandomSampler(weights, len(targets), replacement=True, generator=generator)
+        loaders[split] = DataLoader(TensorDataset(ids[indices], labels[indices]),
+            batch_size=batch_size, shuffle=split == "train" and sampler is None,
+            sampler=sampler, generator=generator)
+    return loaders
 
 
 def load_tokens(source, dataset_metadata, data, device="cpu", batch_size=32):
@@ -111,11 +133,16 @@ def run(sources, dataset_metadata, output, epochs=30, batch_size=32, learning_ra
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.benchmark = False
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, exist_ok=True)
+    if any(not p.is_file() or p.suffix not in (".sh", ".log") for p in output.iterdir()):
+        raise FileExistsError(f"Output directory already contains results: {output}")
     comparison = []
     for source in sources:
         torch.manual_seed(data_seed)
+        started = perf_counter()
+        print(f"{source['name']} loading tokens", flush=True)
         ids, examples, codebook, metadata = load_tokens(source, dataset_metadata, data, device, batch_size)
+        print(f"{source['name']} loaded {len(examples)} examples in {perf_counter() - started:.1f}s", flush=True)
         indices = torch.searchsorted(examples, requested)
         assert torch.equal(examples[indices], requested), "Missing requested token examples"
         ids = ids[indices]
@@ -132,9 +159,8 @@ def run(sources, dataset_metadata, output, epochs=30, batch_size=32, learning_ra
                 "channel_coords": torch.tensor(classifier_config["channel_coords"], dtype=torch.float32)})
             model = torch.nn.Sequential(torch.nn.Embedding.from_pretrained(codebook.clone(), freeze=True),
                                         classifier).to(device)
-            loaders = {s: DataLoader(TensorDataset(ids[i], labels[i]), batch_size=batch_size,
-                        shuffle=s == "train", generator=torch.Generator().manual_seed(data_seed))
-                       for s, i in splits.items()}
+            sampling = data.get("data_config", {}).get("sampler")
+            loaders = make_loaders(ids, labels, splits, batch_size, data_seed, sampling)
             optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
             destination = output / source["name"] / f"seed_{seed}"
             destination.mkdir(parents=True)
@@ -143,6 +169,7 @@ def run(sources, dataset_metadata, output, epochs=30, batch_size=32, learning_ra
                 "split_example_ids": {s: requested[i].tolist() for s, i in splits.items()},
                 "classifier": classifier_config, "epochs": epochs, "batch_size": batch_size,
                 "seed": seed, "data_seed": data_seed, "device": device,
+                "sampler": sampling,
                 "optimizer": {"name": "Adam", **optimizer.defaults},
                 "deterministic_algorithms": True, "torch_num_threads": torch.get_num_threads(),
                 "max_grad_norm": 1.0, "selection": "highest validation balanced accuracy; earliest tie",
@@ -154,6 +181,7 @@ def run(sources, dataset_metadata, output, epochs=30, batch_size=32, learning_ra
             (destination / "config.json").write_text(json.dumps(config, indent=2, allow_nan=False) + "\n")
             history, best_score, best_epoch = [], -1.0, 0
             for epoch in range(1, epochs + 1):
+                started = perf_counter()
                 training = train(model, loaders["train"], optimizer)
                 assert not training["missing_gradients"], training["missing_gradients"]
                 validation = test(model, loaders["val"])
@@ -162,7 +190,8 @@ def run(sources, dataset_metadata, output, epochs=30, batch_size=32, learning_ra
                 if score > best_score:
                     best_score, best_epoch = score, epoch
                     best_state = {k: v.detach().cpu().clone() for k, v in classifier.state_dict().items()}
-                print(f"{source['name']} seed={seed} epoch={epoch}/{epochs} val_balanced_accuracy={score:.6f}", flush=True)
+                print(f"{source['name']} seed={seed} epoch={epoch}/{epochs} "
+                      f"val_balanced_accuracy={score:.6f} elapsed={perf_counter() - started:.1f}s", flush=True)
             classifier.load_state_dict(best_state, strict=True)
             testing = test(model, loaders["test"])
             torch.save(best_state, destination / "classifier.pt")
