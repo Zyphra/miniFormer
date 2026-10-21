@@ -82,7 +82,10 @@ def main():
     args = parser.parse_args()
     assert not args.output.exists(), f"Cache already exists: {args.output}"
     module = importlib.import_module(f"tokenization.{args.tokenizer}")
-    tokenizer = module.Tokenizer(args.repo, args.checkpoint, args.device)
+    window = read_dataset(args.dataset)["windows"][0]
+    options = {"window_samples": window["stop_sample"] - window["start_sample"]} \
+        if args.tokenizer == "dac" else {}
+    tokenizer = module.Tokenizer(args.repo, args.checkpoint, args.device, **options)
     run_metadata = provenance(args.repo, args.checkpoint)
     run_metadata["tokenizer"] = args.tokenizer
     write_cache(args.dataset, tokenizer, args.output, run_metadata, args.batch_size)

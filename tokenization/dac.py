@@ -5,7 +5,8 @@ import torch
 
 
 class Tokenizer:
-    def __init__(self, repo, checkpoint, device="cpu", target_std=0.3, clip=1.0):
+    def __init__(self, repo, checkpoint, device="cpu", target_std=0.3, clip=1.0,
+                 window_samples=1280):
         import dac
         from audiotools import AudioSignal
         from audiotools.data.transforms import EEGNormalize
@@ -21,13 +22,14 @@ class Tokenizer:
         self.model.to(device).eval().requires_grad_(False)
         self.device, self.frequency = device, 256
         hop = int(self.model.hop_length)
-        assert 1280 % hop == 0, "Five seconds must divide into whole tokens"
-        self.tokens_per_window = 1280 // hop
+        assert window_samples > 0 and window_samples % hop == 0, "Window must divide into whole tokens"
+        self.window_samples = window_samples
+        self.tokens_per_window = window_samples // hop
         self.normalize = EEGNormalize(target_std=target_std, clip=clip)
         self.audio_signal = AudioSignal
         self.metadata = {"architecture": config, "target_std": target_std, "clip": clip,
                          "filter": None, "normalization": "EEGNormalize per channel/window",
-                         "token_stride_seconds": hop / 256}
+                         "token_stride_seconds": hop / 256, "window_samples": window_samples}
 
     @property
     def codebook(self):
@@ -40,7 +42,7 @@ class Tokenizer:
     @torch.no_grad()
     def encode(self, windows):
         b, c, n = windows.shape
-        assert n == 1280
+        assert n == self.window_samples
         x = windows.to(device=self.device, dtype=torch.float32).reshape(b * c, 1, n)
         # Deterministic native transform, without the random augmentation wrapper.
         x = self.normalize._transform(self.audio_signal(x, sample_rate=256)).audio_data

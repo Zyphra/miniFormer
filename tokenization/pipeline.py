@@ -49,7 +49,8 @@ def read_dataset(path):
     assert len(set(signal["channel_names"])) == len(signal["channel_names"])
     assert [r["recording_id"] for r in data["recordings"]] == list(range(len(data["recordings"])))
     assert [w["example_id"] for w in data["windows"]] == list(range(len(data["windows"])))
-    assert all(w["duration"] == 5 for w in data["windows"])
+    durations = {w["duration"] for w in data["windows"]}
+    assert len(durations) == 1 and next(iter(durations)) > 0, "Expected one positive window duration"
     return data
 
 

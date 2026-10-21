@@ -87,7 +87,10 @@ def load_tokens(source, dataset_metadata, data, device="cpu", batch_size=32):
         from tokenization.cache import provenance
 
         adapter = importlib.import_module(f"tokenization.{source['tokenizer']}")
-        tokenizer = adapter.Tokenizer(source["repo"], source["checkpoint"], device)
+        window = data["windows"][0]
+        options = {"window_samples": window["stop_sample"] - window["start_sample"]} \
+            if source["tokenizer"] == "dac" else {}
+        tokenizer = adapter.Tokenizer(source["repo"], source["checkpoint"], device, **options)
         metadata = {"provenance": provenance(source["repo"], source["checkpoint"]),
                     "tokenizer": source["tokenizer"], "preprocessing": tokenizer.metadata,
                     "dataset_sha256": dataset_hash, "channel_names": channels,

@@ -24,7 +24,8 @@ class ToyTokenizer:
     metadata = {"test_fixture": True}
     prepared = 0
 
-    def __init__(self, *args):
+    def __init__(self, *args, window_samples=1280):
+        self.tokens_per_window = window_samples // self.frequency
         self.model = torch.nn.Identity().eval().requires_grad_(False)
         self.codebook = torch.arange(128, dtype=torch.float32).reshape(8, 16) / 128
 
@@ -37,7 +38,7 @@ class ToyTokenizer:
         return windows[:, :, ::256].long() % 8
 
 
-def check(directory):
+def check(directory, duration=5):
     torch.set_num_threads(1)
     dataset, cache, output = (directory / name for name in ("eeg", "tokens", "results"))
     dataset.mkdir()
@@ -52,11 +53,11 @@ def check(directory):
         torch.save({"eeg": eeg, "example_ids": examples}, dataset / signal_file)
         data["recordings"].append(dict(recording_id=r, subject=f"subject{r}", label=r % 2,
             split=split, n_samples=2560, signal_file=signal_file, signal_sha256=sha256(dataset / signal_file)))
-        data["windows"].extend(dict(example_id=2 * r + i, recording_id=r, start=5 * i, duration=5,
-            start_sample=i * 1280, stop_sample=(i + 1) * 1280) for i in range(2))
+        data["windows"].extend(dict(example_id=2 * r + i, recording_id=r, start=duration * i, duration=duration,
+            start_sample=i * duration * 256, stop_sample=(i + 1) * duration * 256) for i in range(2))
     metadata = dataset / "cache.json"
     metadata.write_text(json.dumps(data))
-    write_cache(dataset, ToyTokenizer(), cache, {"fixture": True, "tokenizer": "dac"})
+    write_cache(dataset, ToyTokenizer(window_samples=duration * 256), cache, {"fixture": True, "tokenizer": "dac"})
     # Reverse both shard and example order: alignment must use IDs, not loading order.
     cache_meta = json.loads((cache / "metadata.json").read_text())
     for file in cache.glob("[0-9]*.pt"):
@@ -138,6 +139,7 @@ def check(directory):
         config = json.loads((folder / "config.json").read_text())
         assert metrics["best_epoch"] == 2 and metrics["test"]["n_examples"] == 2
         assert config["classifier"]["codebook_dim"] == 16
+        assert config["classifier"]["coarse_time"] == duration
         assert config["seed"] == seed and config["data_seed"] == data_seed
         for key in ("model_dim", "heads", "depth", "temporal_pos", "channel_pos", "aggregation_mode", "normalize"):
             assert config["classifier"][key] == signature(runner.TransformerClassifier).parameters[key].default
@@ -198,5 +200,6 @@ def check(directory):
 
 
 if __name__ == "__main__":
-    with TemporaryDirectory() as directory:
-        check(Path(directory))
+    for duration in (5, 1):
+        with TemporaryDirectory() as directory:
+            check(Path(directory), duration)

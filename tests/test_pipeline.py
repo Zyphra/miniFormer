@@ -102,6 +102,15 @@ def check(name, repo, checkpoint, dataset):
     projection(book[actual]).sum().backward()
     assert torch.isfinite(projection.weight.grad).all()
 
+    if name == "dac":
+        short = module.Tokenizer(repo, checkpoint, window_samples=256)
+        short_windows = windows[:, :, :256]
+        x = short_windows.float().reshape(-1, 1, 256)
+        x = ((x - x.mean(-1, keepdim=True)) * (.3 / x.std(-1, keepdim=True).clamp_min(1e-8))).clamp(-1, 1)
+        native = short.model.encode(short.model.preprocess(x, 256))[1].reshape(2, 19, -1)
+        assert short.tokens_per_window == 256 // short.model.hop_length
+        assert torch.equal(short.encode(short_windows), native), "One-second adapter differs from native inference"
+
     with TemporaryDirectory() as directory:
         fixture = Path(directory) / "eeg"
         fixture.mkdir()
